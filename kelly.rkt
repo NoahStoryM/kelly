@@ -3,7 +3,7 @@
 (require typed/json math)
 (require "download-data.rkt" "gbm.rkt")
 
-(provide kelly)
+(provide kelly bar)
 
 (: t Nonnegative-Real)
 (define t 1)
@@ -17,9 +17,9 @@
         (for/vector : (Vectorof (Vector Real Real))
                     ([name : Symbol (in-list name*)])
           (define inst-id (cons name $))
-          (define r* (get-r* inst-id bar before after))
-          (when (null? r*) (return '()))
-          (define-values (μ σ^2) (gbm t r*))
+          (define r** (get-r** inst-id bar before after))
+          (when (andmap null? r**) (return '()))
+          (define-values (μ σ^2) (gbm t r**))
           (define e^μ (exp μ))
           (define B (sub1 e^μ))
           (define A (- (* e^μ e^μ (exp σ^2)) (* 2 e^μ) -1))

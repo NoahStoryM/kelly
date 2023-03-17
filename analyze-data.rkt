@@ -1,36 +1,22 @@
 #lang typed/racket
 
+(require typed/racket/date)
 (require "kelly.rkt" "download-data.rkt")
 (provide (all-defined-out))
 
-(: get-margin  (-> Real))
-(: set-margin! (-> Real Void))
-(define-values (get-margin set-margin!)
-  (let ([margin : Real 0])
-    (values
-     (λ () margin)
-     (λ (v) (set! margin v)))))
 
-(: get-position*  (-> (Listof (List Symbol Real Real))))
-(: set-position*! (-> (Listof (List Symbol Real Real)) Void))
-(define-values (get-position* set-position!)
-  (let ([position* : (Listof (List Symbol Real Real)) '()])
-    (values
-     (λ () position*)
-     (λ (v) (set! position* v)))))
-
-(: allocation->position*
+(: ratio*->position*
    (-> Real
        (-> (Listof (Pair Symbol Real))
            (Listof (List Symbol Real Real)))))
-(define allocation->position*
+(define ratio*->position*
   (λ (margin)
-    (λ (allocation)
-      (define x (length allocation))
-      (for/list ([f : (Pair Symbol Real) (in-list allocation)])
-        (list (car f)
-              (* x (cdr f))
-              (exact->inexact (/ margin x)))))))
+    (λ (ratio*)
+      (define x (length ratio*))
+      (for/list ([ratio : (Pair Symbol Real) (in-list ratio*)])
+        (define name (car ratio))
+        (define proportion (cdr ratio))
+        (list name (* proportion x) (exact->inexact (/ margin x)))))))
 
 
 (: open-position! (-> Symbol Real Void))
@@ -146,6 +132,60 @@
           (open-position! name (- new-cash now-cash))
           (set! margin (- margin imr))])])))
 
+(: get-ratio* (-> Real Real
+                  Symbol (Listof Symbol)
+                  Integer Integer
+                  Natural Natural Natural
+                  (Listof (Pair Symbol Real))))
+(define get-ratio*
+  (λ (min-lever max-lever $ name* before after bar min-limit max-limit)
+    (define end-date (milliseconds->string after))
+    (define min-days (quotient min-limit (* 60 24)))
+    (define max-days (quotient max-limit (* 60 24)))
+    (let loop : (Listof (Pair Symbol Real))
+         ([day* : (Listof String)
+                (for/list ([day (in-list (reverse (dates-between before after)))]
+                           [i (in-naturals)]
+                           #:when (<= min-days i max-days))
+                  day)]
+          [min-day : String ""]
+          [min-ratio* : (Listof (Pair Symbol Real)) '()]
+          [min-total-lever : Real +inf.0])
+      (define start-date (car day*))
+      (define before (string->milliseconds start-date))
+      (define ratio* (kelly $ name* bar before after))
+
+      (: total-lever Real)
+      (define total-lever
+        (for/sum : Real ([p : (Pair Symbol Real) (in-list ratio*)])
+          (max 0 (cdr p))))
+
+      #;(pretty-print ratio*)
+
+      (cond
+        [(and (pair? ratio*)
+              (andmap
+               (ann (λ (p) (<= min-lever (cdr p) max-lever))
+                    (-> (Pair Symbol Real) Boolean))
+               ratio*))
+         (displayln (format "date : ~a -> ~a;\nbar = ~a;\nlever = ~a x"
+                            (date->string (seconds->date (quotient before 1000)) #t)
+                            (date->string (seconds->date (quotient after  1000)) #t)
+                            (bar->string bar) total-lever))
+         #;(display-msg start-date (bar->string bar) total-lever ratio*)
+         ratio*]
+        [(null? (cdr day*))
+         (displayln (format "date : ~a -> ~a;\nbar = ~a;\nlever = ~a x"
+                            (date->string (seconds->date (quotient before 1000)) #t)
+                            (date->string (seconds->date (quotient after  1000)) #t)
+                            (bar->string bar) min-total-lever))
+         #;(display-msg min-day (bar->string bar) min-total-lever min-ratio*)
+         min-ratio*]
+        [(or (null? ratio*) (>= total-lever min-total-lever))
+         (loop (cdr day*) min-day min-ratio* min-total-lever)]
+        [else
+         (loop (cdr day*) start-date ratio* total-lever)]))))
+
 
 (: get-position* (-> (Listof (List Symbol Real Real))))
 (define get-position*
@@ -158,20 +198,20 @@
       #;[SOL  +00.00 0000.00])))
 
 (: display-msg (-> String String Real (Listof (Pair Symbol Real)) Void))
-(define (display-msg day bar total-lever allocation)
+(define (display-msg day bar total-lever ratio*)
   (newline)
   (displayln (format "Date: ~a" day))
   (displayln (format "Bar: ~a" bar))
   (displayln (format "Total Lever: ~a x" total-lever))
 
-  (displayln "Allocation:")
-  (pretty-print allocation)
+  (displayln "Ratio*:")
+  (pretty-print ratio*)
 
   ;; TODO Cancel orders.
 
   (define margin (* 0.95 5000))
   (define old-position* (get-position*))
-  (define new-position* ((allocation->position* margin) allocation))
+  (define new-position* ((ratio*->position* margin) ratio*))
   (displayln "New positions:")
   (pretty-print new-position*)
 
@@ -183,55 +223,19 @@
     (displayln #"Start analyzing data...")
     (newline)
 
-    (: min-lever Real)
-    (define min-lever 3.5)
-
-    (: max-lever Real)
-    (define max-lever 14.5)
-
-    (define end-date (today))
-    (define dates (reverse (dates-between "2023-01-01" end-date)))
-    (time
-     (let loop : Void
-          ([day* : (Listof String) dates]
-           [bar* : (Listof Natural) '(1 3 5 15 30 60 120 240 360 720 1440)]
-           [min-day : String ""]
-           [min-allocation : (Listof (Pair Symbol Real)) '()]
-           [min-total-lever : Real +inf.0])
-       (parameterize ([bar (car bar*)])
-         (define start-date (car day*))
-         (define before (string->milliseconds start-date))
-         (define after  (string->milliseconds end-date))
-
-         (define allocation
-           (kelly 'BTC #;(USD)
-                  '(#;BTC ETH LTC #;BNB #;OKB #;DYDX #;SOL #;OKT)
-                  (bar) before after))
-
-         (: total-lever Real)
-         (define total-lever
-           (for/sum : Real ([p : (Pair Symbol Real) (in-list allocation)])
-             (max 0 (cdr p))))
-
-         (displayln (format "date = ~a; bar = ~a; lever = ~a x" start-date (bar->string (bar)) total-lever))
-         #;(pretty-print allocation)
-         (newline)
-
-         (cond
-           [(<= min-lever total-lever max-lever)
-            (display-msg start-date (bar->string (bar)) total-lever allocation)]
-           [(null? (cdr day*))
-            (cond
-              [(null? (cdr bar*))
-               (display-msg min-day (bar->string (bar)) min-total-lever min-allocation)]
-              [(< total-lever min-total-lever)
-               (loop dates (cdr bar*) start-date allocation total-lever)]
-              [else
-               (loop dates (cdr bar*) min-day min-allocation min-total-lever)])]
-           [(< total-lever min-total-lever)
-            (loop (cdr day*) bar* start-date allocation total-lever)]
-           [else
-            (loop (cdr day*) bar* min-day min-allocation min-total-lever)]))))
+    (pretty-print
+     (time
+      (parameterize ([bar 1])
+        (get-ratio*
+         #;min-lever -003.50
+         #;max-lever +004.50
+         #;$ 'BTC
+         #;name* '(ETH LTC OKB BNB DYDX UNI #;LINK #;APT #;SOL)
+         #;before (string->milliseconds "2022-01-01")
+         #;after  (assert (current-milliseconds) exact-integer?)
+         #;bar (bar)
+         #;min-limit (*  7 24 60)
+         #;max-limit (* 21 24 60)))))
 
     #;(newline)
     #;(sleep 60)

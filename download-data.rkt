@@ -11,7 +11,8 @@
          minutes-elapsed-since-midnight
          USD bar bar->string
          today today?
-         get-r*)
+         get-datum get-r**
+         load-jsexpr!)
 
 (define-predicate jsexpr-number? (U Integer Inexact-Real))
 
@@ -87,11 +88,15 @@
       [()  (list (seconds->string (current-seconds)))]
       [(s) (dates-between s (car (dates-between)))]
       [(s e)
-       (let ([s (if (string? s) (string->milliseconds s) s)]
-             [e (+ (if (string? e) (string->milliseconds e) e) step)])
-         (for/list : (Listof String)
-                   ([cur : Real (in-range s e step)])
-           (milliseconds->string cur)))])))
+       (if (and (exact-integer? s)
+                (exact-integer? e)
+                (= s e))
+           '()
+           (let ([s (if (string? s) (string->milliseconds s) s)]
+                 [e (if (string? e) (string->milliseconds e) e)])
+             (for/list : (Listof String)
+                       ([cur : Real (in-range s (add1 e) step)])
+               (milliseconds->string cur))))])))
 
 
 (: USD (Parameter (U 'USD 'USDK 'USDC 'USDT 'DAI)))
@@ -338,36 +343,70 @@
     (download-daily-data inst-id day #:history? history? #:write-file? write-file?)))
 
 
-(: cache (Mutable-HashTable
-          (Immutable-Vector Natural (Pair Symbol Symbol) String)
-          (HashTable Symbol JSExpr)))
-(define cache (make-hash))
+(: cache:jsexpr (Mutable-HashTable
+                 (Immutable-Vector Natural (Pair Symbol Symbol) String)
+                 (HashTable Symbol JSExpr)))
+(define cache:jsexpr (make-hash))
 
-(: get-r* (-> (Pair Symbol Symbol) Natural Integer Integer (Listof Nonnegative-Real)))
-(define get-r*
-  (λ (inst-id bar before after)
-    (define name (car inst-id))
-    (define $ (cdr inst-id))
-    (for/fold ([r* : (Listof Nonnegative-Real) '()])
-              ([day (in-list (dates-between before after))])
-      (define key (vector-immutable bar inst-id day))
-      (check-key! key)
-      (define jsexpr (hash-ref cache key))
-      (let* ([data (hash-ref jsexpr 'data)]
-             [data (assert data list?)])
-        (for/fold ([r* : (Listof Nonnegative-Real) r*])
-                  ([datum (in-list data)]
-                   #:when (list? datum))
-          #:break (let* ([ts (list-ref datum 0)]
-                         [ts (assert ts natural?)])
-                    (not (<= before ts after)))
-          (let* ([o (list-ref datum 1)]
-                 [o (assert o real?)]
-                 [c (list-ref datum 4)]
-                 [c (assert c real?)]
-                 [r (/ c o)]
-                 [r (assert r positive?)])
-            (cons r r*)))))))
+(: get-r** (-> (Pair Symbol Symbol) Natural Integer Integer (Listof (Listof Nonnegative-Real))))
+(define get-r**
+  (let ()
+    (: cache:r* (Mutable-HashTable
+                 (Immutable-Vector Natural (Pair Symbol Symbol) String)
+                 (Listof Nonnegative-Real)))
+    (define cache:r* (make-hash))
+
+    (λ (inst-id bar before after)
+      (for/fold ([r** : (Listof (Listof Nonnegative-Real)) '()])
+                ([day (in-list (reverse (dates-between before after)))])
+        (define key (vector-immutable bar inst-id day))
+        #;(check-key! key)
+
+        (define r* (hash-ref! cache:r* key (λ () '())))
+        (if (= (length r*) (* 60 24))
+            (cons r* r**)
+            (let* ([jsexpr (hash-ref cache:jsexpr key)]
+                   [data (hash-ref jsexpr 'data)]
+                   [data (assert data list?)]
+                   [data (assert
+                          (member #f data
+                                  (λ (_ datum)
+                                    (let* ([datum (assert datum list?)]
+                                           [ts (list-ref datum 0)]
+                                           [ts (assert ts exact-integer?)])
+                                      (<= before ts after)))))])
+              (define r*
+                (for/fold ([r* : (Listof Nonnegative-Real) '()])
+                          ([datum (in-list data)]
+                           #:when (list? datum))
+                  #:break (let* ([ts (list-ref datum 0)]
+                                 [ts (assert ts exact-integer?)])
+                            (not (<= before ts after)))
+                  (let* ([o (list-ref datum 1)]
+                         [o (assert o real?)]
+                         [c (list-ref datum 4)]
+                         [c (assert c real?)]
+                         [r (/ c o)]
+                         [r (assert r positive?)])
+                    (cons r r*))))
+              (hash-set! cache:r* key r*)
+              (cons r* r**)))))))
+
+(: get-datum (-> (Pair Symbol Symbol) Natural Integer (Option (Listof Any))))
+(define get-datum
+  (λ (inst-id bar ts)
+    (define day (milliseconds->string ts))
+    (define key (vector-immutable bar inst-id day))
+    (define jsexpr (hash-ref cache:jsexpr key (λ () #f)))
+    (and jsexpr
+         (let* ([data (hash-ref jsexpr 'data)]
+                [data (assert data list?)])
+           (for/or : (Option (Listof Any))
+                   ([datum (in-list data)]
+                    #:when (list? datum))
+             (define ts0 (assert (list-ref datum 0) exact-integer?))
+             (and (< (abs (- ts ts0)) (* 1000 60 bar))
+                  datum))))))
 
 (: update-cache!
    (-> (Immutable-Vector Natural (Pair Symbol Symbol) String)
@@ -423,17 +462,20 @@
           (add1 len)))
       (if (= len (length data))
           (let ([jsexpr : (HashTable Symbol JSExpr) (hash-set jsexpr 'data data)])
-            (hash-set! cache key jsexpr)
+            (hash-set! cache:jsexpr key jsexpr)
             (check-key! key))
-          (update-cache! key #:force? #t)))))
+          (begin
+            (displayln (format "Warning: ~a = length(data) ≠ len = ~a!"
+                               (length data) len))
+            (update-cache! key #:force? #t))))))
 
 (: check-key! (-> (Immutable-Vector Natural (Pair Symbol Symbol) String) Void))
 (define (check-key! key)
   (cond
-    [(hash-has-key? cache key)
+    [(hash-has-key? cache:jsexpr key)
      (define day (vector-ref key 2))
      (define limit (quotient (minutes-elapsed-since-midnight day) (bar)))
-     (define jsexpr (hash-ref cache key))
+     (define jsexpr (hash-ref cache:jsexpr key))
      (define data (assert (hash-ref jsexpr 'data) list?))
      (define len (length data))
      (cond
@@ -446,6 +488,14 @@
         (displayln (format "Warning: ~a = length(r*) > limit = ~a!" len limit))
         (update-cache! key #:force? #t)])]
     [else (update-cache! key)]))
+
+(: load-jsexpr! (-> Natural (Listof (Pair Symbol Symbol)) (Listof String) Void))
+(define load-jsexpr!
+  (λ (bar inst-id* day*)
+    (for* ([inst-id (in-list inst-id*)]
+           [day (in-list day*)])
+      (define key (vector-immutable bar inst-id day))
+      (check-key! key))))
 
 
 (: main (->* () ((Vectorof String)) Any))
@@ -463,6 +513,6 @@
            #;[LTC . USDC]
            #;[OKB . USDC]
            #;[BNB . USDC])
-         (dates-between "2022-01-01" "2022-12-31"))))
+         (dates-between "2022-07-19" "2022-07-21"))))
     #t))
 (module+ main (exit (main)))
