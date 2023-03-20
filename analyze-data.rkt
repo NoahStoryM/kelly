@@ -138,34 +138,33 @@
                   Natural Natural Natural
                   (Listof (Pair Symbol Real))))
 (define get-ratio*
-  (λ (min-lever max-lever $ name* before after bar min-limit max-limit)
+  (λ (min-lever max-lever $ name* before after bar min-days max-days)
     (define end-date (milliseconds->string after))
-    (define min-days (quotient min-limit (* 60 24)))
-    (define max-days (quotient max-limit (* 60 24)))
     (let loop : (Listof (Pair Symbol Real))
-         ([day* : (Listof String)
+         ([day* : (Listof String)       ; TODO assert day* isn't '()
                 (for/list ([day (in-list (reverse (dates-between before after)))]
-                           [i (in-naturals)]
-                           #:when (<= min-days i max-days))
+                           [days (in-naturals)]
+                           #:when (<= min-days days max-days))
                   day)]
           [min-day : String ""]
           [min-ratio* : (Listof (Pair Symbol Real)) '()]
           [min-total-lever : Real +inf.0])
+      (assert day* pair?)
       (define start-date (car day*))
       (define before (string->milliseconds start-date))
       (define ratio* (kelly $ name* bar before after))
 
       (: total-lever Real)
       (define total-lever
-        (for/sum : Real ([p : (Pair Symbol Real) (in-list ratio*)])
-          (max 0 (cdr p))))
+        (for/sum : Real ([ratio : (Pair Symbol Real) (in-list ratio*)])
+          (max 0 (cdr ratio))))
 
       #;(pretty-print ratio*)
 
       (cond
         [(and (pair? ratio*)
               (andmap
-               (ann (λ (p) (<= min-lever (cdr p) max-lever))
+               (ann (λ (ratio) (<= min-lever (cdr ratio) max-lever))
                     (-> (Pair Symbol Real) Boolean))
                ratio*))
          (displayln (format "date : ~a -> ~a;\nbar = ~a;\nlever = ~a x"
@@ -234,8 +233,8 @@
          #;before (string->milliseconds "2022-01-01")
          #;after  (assert (current-milliseconds) exact-integer?)
          #;bar (bar)
-         #;min-limit (*  7 24 60)
-         #;max-limit (* 21 24 60)))))
+         #;min-days 7
+         #;max-days 21))))
 
     #;(newline)
     #;(sleep 60)

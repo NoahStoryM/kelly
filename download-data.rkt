@@ -11,6 +11,7 @@
          minutes-elapsed-since-midnight
          USD bar bar->string
          today today?
+         cache:jsexpr cache:r*
          get-datum get-r**
          load-jsexpr!)
 
@@ -348,49 +349,49 @@
                  (HashTable Symbol JSExpr)))
 (define cache:jsexpr (make-hash))
 
+(: cache:r* (Mutable-HashTable
+             (Immutable-Vector Natural (Pair Symbol Symbol) String)
+             (Listof Nonnegative-Real)))
+(define cache:r* (make-hash))
+
 (: get-r** (-> (Pair Symbol Symbol) Natural Integer Integer (Listof (Listof Nonnegative-Real))))
 (define get-r**
-  (let ()
-    (: cache:r* (Mutable-HashTable
-                 (Immutable-Vector Natural (Pair Symbol Symbol) String)
-                 (Listof Nonnegative-Real)))
-    (define cache:r* (make-hash))
+  (λ (inst-id bar before after)
+    (for/fold ([r** : (Listof (Listof Nonnegative-Real)) '()])
+              ([day (in-list (reverse (dates-between before after)))])
+      (define key (vector-immutable bar inst-id day))
+      #;(check-key! key)
 
-    (λ (inst-id bar before after)
-      (for/fold ([r** : (Listof (Listof Nonnegative-Real)) '()])
-                ([day (in-list (reverse (dates-between before after)))])
-        (define key (vector-immutable bar inst-id day))
-        #;(check-key! key)
-
-        (define r* (hash-ref! cache:r* key (λ () '())))
-        (if (= (length r*) (* 60 24))
-            (cons r* r**)
-            (let* ([jsexpr (hash-ref cache:jsexpr key)]
-                   [data (hash-ref jsexpr 'data)]
-                   [data (assert data list?)]
-                   [data (assert
-                          (member #f data
-                                  (λ (_ datum)
-                                    (let* ([datum (assert datum list?)]
-                                           [ts (list-ref datum 0)]
-                                           [ts (assert ts exact-integer?)])
-                                      (<= before ts after)))))])
-              (define r*
-                (for/fold ([r* : (Listof Nonnegative-Real) '()])
-                          ([datum (in-list data)]
-                           #:when (list? datum))
-                  #:break (let* ([ts (list-ref datum 0)]
-                                 [ts (assert ts exact-integer?)])
-                            (not (<= before ts after)))
-                  (let* ([o (list-ref datum 1)]
-                         [o (assert o real?)]
-                         [c (list-ref datum 4)]
-                         [c (assert c real?)]
-                         [r (/ c o)]
-                         [r (assert r positive?)])
-                    (cons r r*))))
-              (hash-set! cache:r* key r*)
-              (cons r* r**)))))))
+      (define r* (hash-ref! cache:r* key (λ () '())))
+      (if (and (not (equal? day (milliseconds->string after)))
+               (= (length r*) (/ (* 60 24) bar)))
+          (cons r* r**)
+          (let* ([jsexpr (hash-ref cache:jsexpr key)]
+                 [data (hash-ref jsexpr 'data)]
+                 [data (assert data list?)]
+                 [data (assert
+                        (member #f data
+                                (λ (_ datum)
+                                  (let* ([datum (assert datum list?)]
+                                         [ts (list-ref datum 0)]
+                                         [ts (assert ts exact-integer?)])
+                                    (<= before ts after)))))])
+            (define r*
+              (for/fold ([r* : (Listof Nonnegative-Real) '()])
+                        ([datum (in-list data)]
+                         #:when (list? datum))
+                #:break (let* ([ts (list-ref datum 0)]
+                               [ts (assert ts exact-integer?)])
+                          (not (<= before ts after)))
+                (let* ([o (list-ref datum 1)]
+                       [o (assert o real?)]
+                       [c (list-ref datum 4)]
+                       [c (assert c real?)]
+                       [r (/ c o)]
+                       [r (assert r positive?)])
+                  (cons r r*))))
+            (hash-set! cache:r* key r*)
+            (cons r* r**))))))
 
 (: get-datum (-> (Pair Symbol Symbol) Natural Integer (Option (Listof Any))))
 (define get-datum
@@ -491,28 +492,39 @@
 
 (: load-jsexpr! (-> Natural (Listof (Pair Symbol Symbol)) (Listof String) Void))
 (define load-jsexpr!
-  (λ (bar inst-id* day*)
+  (λ (#;bar b inst-id* day*)
     (for* ([inst-id (in-list inst-id*)]
            [day (in-list day*)])
-      (define key (vector-immutable bar inst-id day))
-      (check-key! key))))
+      (define key (vector-immutable b inst-id day))
+      (parameterize [(bar b)]
+        (check-key! key)))))
 
 
 (: main (->* () ((Vectorof String)) Any))
 (define main
   (λ ([argv (current-command-line-arguments)])
-    (for ([i : Natural (in-list '(1 3 5 15 30 60 120 240 360 720 1440))])
+    (for ([i : Natural (in-list '(1) #;'(1 3 5 15 30 60 120 240 360 720 1440))])
       (parameterize ([bar i])
         (download-daily-data*
-         '([ETH . BTC]
-           [LTC . BTC]
-           #;[OKB . BTC]
-           #;[BNB . BTC]
-           #;[BTC . USDC]
-           #;[ETH . USDC]
-           #;[LTC . USDC]
-           #;[OKB . USDC]
-           #;[BNB . USDC])
-         (dates-between "2022-07-19" "2022-07-21"))))
+         '(#;[ETH  . BTC]
+           #;[LTC  . BTC]
+           [OKB  . BTC]
+           #;[BNB  . BTC]
+           #;[APT  . BTC]
+           [SOL  . BTC]
+           [LINK . BTC]
+           [DYDX . BTC]
+           [UNI  . BTC]
+           #;[BTC  . USDC]
+           #;[ETH  . USDC]
+           #;[LTC  . USDC]
+           [OKB  . USDC]
+           #;[BNB  . USDC]
+           #;[APT  . USDC]
+           [SOL  . USDC]
+           [LINK . USDC]
+           [DYDX . USDC]
+           [UNI  . USDC])
+         (dates-between "2022-01-01" "2023-03-01"))))
     #t))
 (module+ main (exit (main)))
