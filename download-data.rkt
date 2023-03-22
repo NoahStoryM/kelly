@@ -101,7 +101,7 @@
 
 
 (: USD (Parameter (U 'USD 'USDK 'USDC 'USDT 'DAI)))
-(define USD (make-parameter 'USDC))
+(define USD (make-parameter 'USDT))
 
 (: bar (Parameter Natural))
 (define bar (make-parameter 15))
@@ -238,7 +238,7 @@
               (case (hash-ref jsexpr:name-$ 'code)
                 [("51001")
                  (case $
-                   [(USD USDC USDT) (error 'download "Instrument ID does not exist")]
+                   [(USD USDK USDC USDT DAI) (error 'download "Instrument ID does not exist")]
                    [else
                     (let* ([jsexpr:name-USD (simple-download (make-url name (USD)))]
                            [jsexpr:$-USD    (simple-download (make-url $ (USD)))]
@@ -336,12 +336,16 @@
          (Listof String))
         (#:history? Boolean
          #:write-file? Boolean)
-        (Listof JSExpr)))
+        Void))
 (define (download-daily-data* inst-id* day* #:history? [history? #t] #:write-file? [write-file? #t])
-  (for*/list : (Listof JSExpr)
-             ([day : String (in-list day*)]
-              [inst-id : (Pair Symbol Symbol) inst-id*])
-    (download-daily-data inst-id day #:history? history? #:write-file? write-file?)))
+  (define thd*
+    (for/list : (Listof Thread) ([inst-id : (Pair Symbol Symbol) inst-id*])
+      (thread
+       (λ ()
+         (for ([day : String (in-list day*)])
+           (download-daily-data inst-id day #:history? history? #:write-file? write-file?))))))
+  (for ([thd (in-list thd*)])
+    (thread-wait thd)))
 
 
 (: cache:jsexpr (Mutable-HashTable
@@ -493,38 +497,51 @@
 (: load-jsexpr! (-> Natural (Listof (Pair Symbol Symbol)) (Listof String) Void))
 (define load-jsexpr!
   (λ (#;bar b inst-id* day*)
-    (for* ([inst-id (in-list inst-id*)]
-           [day (in-list day*)])
-      (define key (vector-immutable b inst-id day))
-      (parameterize [(bar b)]
-        (check-key! key)))))
+    (define thd*
+      (for/list : (Listof Thread) ([inst-id (in-list inst-id*)])
+        (thread
+         (λ ()
+           (for ([day (in-list day*)])
+             (define key (vector-immutable b inst-id day))
+             (parameterize [(bar b)]
+               (check-key! key)))))))
+    (for ([thd (in-list thd*)])
+      (thread-wait thd))))
 
 
 (: main (->* () ((Vectorof String)) Any))
 (define main
   (λ ([argv (current-command-line-arguments)])
+    (define inst-id*
+      '(#;[BTC  . USDT]
+        #;[ETH  . USDT]
+        #;[LTC  . USDT]
+        #;[XMR  . USDT]
+        #;[DASH . USDT]
+        #;[OKB  . USDT]
+        #;[BNB  . USDT]
+        #;[APT  . USDT]
+        #;[SOL  . USDT]
+        #;[LINK . USDT]
+        #;[DYDX . USDT]
+        #;[UNI  . USDT]
+        [ETH  . BTC]
+        [LTC  . BTC]
+        [XMR  . BTC]
+        [DASH . BTC]
+        [OKB  . BTC]
+        #;[BNB  . BTC]
+        #;[APT  . BTC]
+        #;[SOL  . BTC]
+        #;[LINK . BTC]
+        #;[DYDX . BTC]
+        #;[UNI  . BTC]))
+
     (for ([i : Natural (in-list '(1) #;'(1 3 5 15 30 60 120 240 360 720 1440))])
-      (parameterize ([bar i])
-        (download-daily-data*
-         '(#;[ETH  . BTC]
-           #;[LTC  . BTC]
-           [OKB  . BTC]
-           #;[BNB  . BTC]
-           #;[APT  . BTC]
-           [SOL  . BTC]
-           [LINK . BTC]
-           [DYDX . BTC]
-           [UNI  . BTC]
-           #;[BTC  . USDC]
-           #;[ETH  . USDC]
-           #;[LTC  . USDC]
-           [OKB  . USDC]
-           #;[BNB  . USDC]
-           #;[APT  . USDC]
-           [SOL  . USDC]
-           [LINK . USDC]
-           [DYDX . USDC]
-           [UNI  . USDC])
-         (dates-between "2022-01-01" "2023-03-01"))))
+      (time
+       (parameterize ([bar i])
+         (load-jsexpr! (bar) inst-id* (dates-between "2018-04-01" "2023-03-21"))
+         #;(download-daily-data* inst-id* (dates-between "2018-04-01" "2023-03-20")))))
+
     #t))
 (module+ main (exit (main)))

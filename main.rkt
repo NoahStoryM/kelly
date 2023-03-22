@@ -20,7 +20,7 @@
          (unbox (cdr price))))))
 
 (: update-asset*! (-> (Listof (Pair Symbol Real)) Void))
-(define update-asset*!                  ; TODO market fee & limit fee
+(define update-asset*!
   (let ([fee : Real (/ 0.0009 #;0.0007 2)])
     (λ (ratio*)
       (define total-value (get-total-value))
@@ -172,21 +172,21 @@
 (: main (->* () ((Vectorof String)) Any))
 (define main
   (λ ([argv (current-command-line-arguments)])
-    (displayln #"Start backtesting...")
+    (displayln #"Start main work...")
 
     (define $ 'BTC)
-    (define name* '(#;BTC ETH LTC XMR DASH OKB #;BNB #;SOL #;APT #;LINK #;DYDX #;UNI))
+    (define name* '(#;BTC ETH LTC XMR DASH OKB BNB SOL APT LINK DYDX UNI))
     (define inst-id* (get-inst-id* $ name*))
 
 
-    (define start-date (string->milliseconds "2018-04-01"))
-    (define mid-date   (string->milliseconds "2018-04-17"))
-    (define end-date   (string->milliseconds "2023-03-21"))
+    (define start-date (string->milliseconds "2023-01-01"))
+    (define mid-date   (string->milliseconds "2023-01-17"))
+    (define end-date   #;(current-milliseconds) (string->milliseconds "2023-03-20"))
     (define day* (dates-between start-date end-date))
     (parameterize ([bar 1])
       (time (load-jsexpr! (bar) inst-id* day*))
 
-      (call-with-output-file "backtesting.log"
+      (call-with-output-file "main.log"
         #:exists 'truncate/replace
         (ann
          (λ (out)
@@ -194,14 +194,14 @@
              (for*/list : (Listof (Immutable-Vector
                                    Positive-Integer Positive-Integer Real
                                    Nonnegative-Real Nonnegative-Real Nonnegative-Real))
-                        ([bar   : Positive-Integer (in-list '(1440)) #;(in-list '(60 120 360 720 1440))]
-                         [days  : Positive-Integer (in-list '(16)) #;(in-range 14 21) #;(in-range 1 50)]
+                        ([bar   : Positive-Integer (in-list '(1440) #;'(60 120 360 720 1440))]
+                         [days  : Positive-Integer (in-list '(16)) #;(in-range 14 21)]
                          [lever : Real (in-list '(1))])
                (time
                 (displayln (format "bar = ~a, days = ~a, lever = ~a." bar days lever))
                 (define step (* bar 60 1000))
                 (define-values (min-r max-r total-r)
-                  (parameterize ([current-output-port out])
+                  (parameterize (#;[current-output-port out])
                     (displayln (format "bar = ~a, days = ~a, lever = ~a." bar days lever))
                     (test lever $ name* start-date mid-date end-date step days)))
                 (vector-immutable bar days lever min-r max-r total-r))))
